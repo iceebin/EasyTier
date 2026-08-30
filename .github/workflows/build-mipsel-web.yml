@@ -69,11 +69,20 @@ jobs:
           # Fix ownership so we can modify files
           sudo chown -R $(whoami):$(whoami) ./musl_gcc
           chmod -R u+rw ./musl_gcc
-          echo "TOOLCHAIN_DIR=$(pwd)/musl_gcc/${MUSL_TARGET}" >> $GITHUB_ENV
-          echo "$(pwd)/musl_gcc/${MUSL_TARGET}/bin" >> $GITHUB_PATH
+          TOOLCHAIN_DIR="$(pwd)/musl_gcc/${MUSL_TARGET}"
+          echo "TOOLCHAIN_DIR=$TOOLCHAIN_DIR" >> $GITHUB_ENV
+          echo "$TOOLCHAIN_DIR/bin" >> $GITHUB_PATH
+
+          # Create sysroot symlink (same as official CI)
+          ln -sf "$TOOLCHAIN_DIR/${MUSL_TARGET}/sysroot" ./musl_gcc/sysroot
+          SYSROOT_DIR="$(readlink -f ./musl_gcc/sysroot)"
+          echo "SYSROOT_DIR=$SYSROOT_DIR" >> $GITHUB_ENV
+
+          # Set bindgen clang args to use musl sysroot, not host headers
+          echo "BINDGEN_EXTRA_CLANG_ARGS_mipsel_unknown_linux_musl=--sysroot=$SYSROOT_DIR -I$TOOLCHAIN_DIR/include" >> $GITHUB_ENV
 
           # Prepare libunwind and libctz for panic-abort
-          LIBGCC_DIR="$(pwd)/musl_gcc/${MUSL_TARGET}/lib/gcc/${MUSL_TARGET}/15.1.0"
+          LIBGCC_DIR="$TOOLCHAIN_DIR/lib/gcc/${MUSL_TARGET}/15.1.0"
           cd "$LIBGCC_DIR" || exit 255
           cp libgcc_eh.a libunwind.a
           ar x libgcc.a _ctzsi2.o _clz.o _bswapsi2.o || true
