@@ -1,0 +1,130 @@
+name: Build mipsel easytier-web-embed
+
+on:
+  workflow_dispatch:
+
+env:
+  TARGET: mipsel-unknown-linux-musl
+  MUSL_TARGET: mipsel-unknown-linux-muslsf
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -qqy build-essential musl-tools
+
+      - name: Setup protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          version: '35.1'
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: 1.95
+          components: rust-src
+          target: wasm32-unknown-unknown
+          cache: false
+          rustflags: ''
+
+      - name: Install wasm-pack
+        uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v5
+        with:
+          version: 10
+          run_install: false
+
+      - name: Get pnpm store directory
+        run: echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
+
+      - name: Setup pnpm cache
+        uses: actions/cache@v5
+        with:
+          path: ${{ env.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-store-
+
+      - name: Install and build frontend
+        run: |
+          pnpm -r install
+          pnpm -r --workspace-concurrency=1 --filter "./easytier-web/*" build
+          # Bundle config generator into web frontend
+          if [ -f easytier-web/frontend/dist/index.html ] && [ -f easytier-web/config-generator/dist/index.html ]; then
+            mkdir -p easytier-web/frontend/dist/config-generator
+            cp -R easytier-web/config-generator/dist/. easytier-web/frontend/dist/config-generator/
+          fi
+          echo "=== Frontend dist contents ==="
+          ls -la easytier-web/frontend/dist/
+
+      - name: Download musl GCC toolchain
+        run: |
+          mkdir -p ./musl_gcc
+          wget --inet4-only -c https://github.com/cross-tools/musl-cross/releases/download/20250520/${MUSL_TARGET}.tar.xz -P ./musl_gcc/
+          tar xf ./musl_gcc/${MUSL_TARGET}.tar.xz -C ./musl_gcc/
+          sudo ln -sf $(pwd)/musl_gcc/${MUSL_TARGET}/bin/*gcc /usr/bin/
+          sudo ln -sf $(pwd)/musl_gcc/${MUSL_TARGET}/bin/*g++ /usr/bin/
+          sudo ln -sf $(pwd)/musl_gcc/${MUSL_TARGET}/bin/*ar /usr/bin/
+          sudo chmod -R a+rwx ./musl_gcc
+
+          # Prepare libunwind and libctz for panic-abort
+          cd "$PWD/musl_gcc/${MUSL_TARGET}/lib/gcc/${MUSL_TARGET}/15.1.0" || exit 255
+          cp libgcc_eh.a libunwind.a
+          ar x libgcc.a _ctzsi2.o _clz.o _bswapsi2.o || true
+          ar rcs libctz.a _ctzsi2.o _clz.o _bswapsi2.o || true
+
+      - name: Verify toolchain
+        run: |
+          which ${MUSL_TARGET}-gcc
+          ${MUSL_TARGET}-gcc --version
+          echo "TOOLCHAIN_BIN=$(pwd)/musl_gcc/${MUSL_TARGET}/bin" >> $GITHUB_ENV
+
+      - name: Build easytier-web (embed)
+        env:
+          RUSTC_BOOTSTRAP: 1
+          CC_mipsel_unknown_linux_musl: ${{ github.workspace }}/musl_gcc/mipsel-unknown-linux-muslsf/bin/mipsel-unknown-linux-muslsf-gcc
+          CXX_mipsel_unknown_linux_musl: ${{ github.workspace }}/musl_gcc/mipsel-unknown-linux-muslsf/bin/mipsel-unknown-linux-muslsf-g++
+          AR_mipsel_unknown_linux_musl: ${{ github.workspace }}/musl_gcc/mipsel-unknown-linux-muslsf/bin/mipsel-unknown-linux-muslsf-ar
+          CARGO_TARGET_MIPSEL_UNKNOWN_LINUX_MUSL_LINKER: ${{ github.workspace }}/musl_gcc/mipsel-unknown-linux-muslsf/bin/mipsel-unknown-linux-muslsf-gcc
+        run: |
+          cargo build -r \
+            --target $TARGET \
+            -Z build-std=std,panic_abort \
+            --package=easytier-web \
+            --features=embed 2>&1 | tee build.log
+
+      - name: Verify binary
+        if: success()
+        run: |
+          file ./target/$TARGET/release/easytier-web
+          ls -lh ./target/$TARGET/release/easytier-web
+
+      - name: Upload binary
+        if: success()
+        uses: actions/upload-artifact@v5
+        with:
+          name: easytier-web-embed-mipsel
+          path: ./target/${{ env.TARGET }}/release/easytier-web
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v5
+        with:
+          name: build-log
+          path: build.log
