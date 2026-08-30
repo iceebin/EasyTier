@@ -66,22 +66,17 @@ jobs:
           mkdir -p ./musl_gcc
           wget --inet4-only -q --show-progress -c https://github.com/cross-tools/musl-cross/releases/download/20250520/${MUSL_TARGET}.tar.xz -P ./musl_gcc/
           tar xf ./musl_gcc/${MUSL_TARGET}.tar.xz -C ./musl_gcc/
-          # Fix ownership so we can modify files
           sudo chown -R $(whoami):$(whoami) ./musl_gcc
           chmod -R u+rw ./musl_gcc
           TOOLCHAIN_DIR="$(pwd)/musl_gcc/${MUSL_TARGET}"
           echo "TOOLCHAIN_DIR=$TOOLCHAIN_DIR" >> $GITHUB_ENV
           echo "$TOOLCHAIN_DIR/bin" >> $GITHUB_PATH
 
-          # Create sysroot symlink (same as official CI)
           ln -sf "$TOOLCHAIN_DIR/${MUSL_TARGET}/sysroot" ./musl_gcc/sysroot
           SYSROOT_DIR="$(readlink -f ./musl_gcc/sysroot)"
           echo "SYSROOT_DIR=$SYSROOT_DIR" >> $GITHUB_ENV
-
-          # Set bindgen clang args to use musl sysroot, not host headers
           echo "BINDGEN_EXTRA_CLANG_ARGS_mipsel_unknown_linux_musl=--sysroot=$SYSROOT_DIR -I$TOOLCHAIN_DIR/include" >> $GITHUB_ENV
 
-          # Prepare libunwind and libctz for panic-abort
           LIBGCC_DIR="$TOOLCHAIN_DIR/lib/gcc/${MUSL_TARGET}/15.1.0"
           cd "$LIBGCC_DIR" || exit 255
           cp libgcc_eh.a libunwind.a
@@ -94,14 +89,12 @@ jobs:
         run: |
           which ${MUSL_TARGET}-gcc
           ${MUSL_TARGET}-gcc --version
-          echo "=== Test compile ==="
           echo 'int main(){return 0;}' > /tmp/test.c
           ${MUSL_TARGET}-gcc -static /tmp/test.c -o /tmp/test && echo "GCC works"
           file /tmp/test
 
       - name: Patch cargo config for absolute paths
         run: |
-          # Replace relative musl_gcc paths with absolute paths in .cargo/config.toml
           sed -i "s|\./musl_gcc|${GITHUB_WORKSPACE}/musl_gcc|g" .cargo/config.toml
           echo "=== Patched mipsel config ==="
           grep -A 20 "target.mipsel-unknown-linux-musl" .cargo/config.toml
